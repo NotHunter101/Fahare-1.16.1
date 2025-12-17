@@ -221,7 +221,7 @@ public final class Fahare extends JavaPlugin implements Listener {
         } else if (cause == PlayerTeleportEvent.TeleportCause.END_PORTAL) {
             var inEnd = environment.equals(World.Environment.THE_END);
             event.setTo(inEnd ? foverworld().getSpawnLocation() : 
-                new Location(Bukkit.getWorld("world_the_end"), 100, 49, 0));
+                new Location(Bukkit.getWorld("world_the_end"), 100, 50, 0));
         }
     }
 
