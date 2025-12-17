@@ -104,6 +104,13 @@ public final class Fahare extends JavaPlugin implements Listener {
             for (Player player : overworld().getPlayers())
                 player.teleport(destination);
         }, 1, 1);
+
+        Bukkit.getScheduler().runTaskTimer(this, () -> {
+            getLogger().info("hello");
+
+            
+
+        }, 1, 20);
     }
 
     private void loadConfig() {
