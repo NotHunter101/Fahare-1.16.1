@@ -1,5 +1,6 @@
 package dev.qixils.fahare;
 
+import com.destroystokyo.paper.event.server.ServerTickEndEvent;
 import cloud.commandframework.Command;
 import cloud.commandframework.bukkit.CloudBukkitCapabilities;
 import cloud.commandframework.execution.CommandExecutionCoordinator;
@@ -8,8 +9,6 @@ import cloud.commandframework.paper.PaperCommandManager;
 import net.kyori.adventure.audience.Audience;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
-import net.kyori.adventure.translation.GlobalTranslator;
-import net.kyori.adventure.translation.TranslationRegistry;
 import net.kyori.adventure.util.UTF8ResourceBundleControl;
 import org.bukkit.*;
 import org.bukkit.command.CommandSender;
@@ -35,81 +34,49 @@ import java.util.stream.Collectors;
 
 import static java.time.format.DateTimeFormatter.ISO_LOCAL_DATE;
 import static net.kyori.adventure.text.Component.text;
-import static net.kyori.adventure.text.Component.translatable;
 
 public final class Fahare extends JavaPlugin implements Listener {
+    private String[] worldNames = { "fworld", "fworld2" };
+    private int worldIndex = 0;
 
-    private static final NamespacedKey REAL_OVERWORLD_KEY = NamespacedKey.minecraft("overworld");
     private static final Random RANDOM = new Random();
-    private final NamespacedKey fakeOverworldKey = new NamespacedKey(this, "overworld");
-    private final NamespacedKey limboWorldKey = new NamespacedKey(this, "limbo");
     private final Map<UUID, Integer> deaths = new HashMap<>();
-    private World limboWorld;
+    private List<World> worlds;
     private Path worldContainer;
-    private @Nullable Path backupContainer;
+    private World limboWorld;
     private boolean resetting = false;
-    // config
-    private boolean backup = true;
+    
     private boolean autoReset = true;
     private boolean anyDeath = false;
     private int lives = 1;
 
-    private static @NotNull World overworld() {
-        return Objects.requireNonNull(Bukkit.getWorld(REAL_OVERWORLD_KEY), "Overworld not found");
-    }
-
-    private @NotNull World fakeOverworld() {
-        return Objects.requireNonNullElseGet(Bukkit.getWorld(fakeOverworldKey), this::createFakeOverworld);
-    }
-
     private @NotNull World createFakeOverworld() {
-        // Create fake overworld
         long seed = RANDOM.nextLong();
-        getComponentLogger().info(translatable("fhr.log.overworld-seed", text(seed)));
-        WorldCreator creator = new WorldCreator(fakeOverworldKey).copy(overworld()).seed(seed);
+        WorldCreator creator = new WorldCreator(worldNames[worldIndex]).copy(overworld()).seed(seed);
         World world = Objects.requireNonNull(creator.createWorld(), "Could not load fake overworld");
         world.setDifficulty(overworld().getDifficulty());
+
         return world;
+    }
+
+    private @NotNull World overworld() {
+        return Objects.requireNonNull(Bukkit.getWorld("world"), "Overworld not found");
+    }
+    
+    private @NotNull World foverworld() {
+        return Objects.requireNonNullElseGet(Bukkit.getWorld(worldNames[worldIndex]), this::createFakeOverworld);
     }
 
     @Override
     public void onEnable() {
-        // Load config
         loadConfig();
 
-        // Create backup folder
         worldContainer = Bukkit.getWorldContainer().toPath();
-        backupContainer = worldContainer.resolve("fahare-backups");
-
-        if (!Files.exists(backupContainer)) {
-            try {
-                Files.createDirectory(backupContainer);
-            } catch (Exception e) {
-                getComponentLogger().error(translatable("fhr.log.error.backup-folder"), e);
-                backupContainer = null;
-            }
-        }
-
-        // Register i18n
-        TranslationRegistry registry = TranslationRegistry.create(new NamespacedKey(this, "translations"));
-        registry.defaultLocale(Locale.US);
-        for (Locale locale : List.of(Locale.US)) { // TODO: reflection
-            ResourceBundle bundle = ResourceBundle.getBundle("Fahare", locale, UTF8ResourceBundleControl.get());
-            registry.registerAll(locale, bundle, false);
-        }
-        GlobalTranslator.translator().addSource(registry);
-
-        // Create limbo world
-        WorldCreator creator = new WorldCreator(limboWorldKey)
+        limboWorld = new WorldCreator("limbo")
                 .type(WorldType.FLAT)
-                .generateStructures(false)
-                .generatorSettings("{\"biome\":\"minecraft:the_end\",\"layers\":[{\"block\":\"minecraft:air\",\"height\":1}]}");
-        limboWorld = creator.createWorld();
+                .generatorSettings("{\"structures\":{\"structures\":{}},\"layers\":[{\"block\":\"air\",\"height\":1}],\"biome\":\"plains\"}")
+                .createWorld();
 
-        // Create fake overworld
-        World fakeOverworld = createFakeOverworld();
-
-        // Register commands
         try {
             final PaperCommandManager<CommandSender> commandManager = PaperCommandManager.createNative(this, CommandExecutionCoordinator.simpleCoordinator());
             if (commandManager.hasCapability(CloudBukkitCapabilities.BRIGADIER)) {
@@ -119,35 +86,23 @@ public final class Fahare extends JavaPlugin implements Listener {
                 }
             }
 
-            // Commands
-            // TODO: help command
-            // TODO: i18n descriptions
             Command.Builder<CommandSender> cmd = commandManager.commandBuilder("fahare");
             commandManager.command(cmd
                     .literal("reset")
                     .permission("fahare.reset")
                     .handler(c -> {
-                        c.getSender().sendMessage(translatable("fhr.chat.resetting"));
                         reset();
                     }));
 
-            // Exception handler
-            new MinecraftExceptionHandler<CommandSender>()
-                    .withDefaultHandlers()
-                    .withDecorator(component -> component.colorIfAbsent(NamedTextColor.RED))
-                    .apply(commandManager, sender -> sender);
         } catch (Exception e) {
-            getComponentLogger().error(translatable("fhr.log.error.commands"), e);
+            getLogger().info(e.toString());
         }
 
-        // Register events and tasks
         Bukkit.getPluginManager().registerEvents(this, this);
         Bukkit.getScheduler().runTaskTimer(this, () -> {
-            // Teleport players from real overworld
-            Location destination = fakeOverworld.getSpawnLocation();
-            for (Player player : overworld().getPlayers()) {
+            Location destination = foverworld().getSpawnLocation();
+            for (Player player : overworld().getPlayers())
                 player.teleport(destination);
-            }
         }, 1, 1);
     }
 
@@ -155,7 +110,6 @@ public final class Fahare extends JavaPlugin implements Listener {
         saveDefaultConfig();
         reloadConfig();
         var config = getConfig();
-        backup = config.getBoolean("backup", backup);
         autoReset = config.getBoolean("auto-reset", autoReset);
         anyDeath = config.getBoolean("any-death", anyDeath);
         lives = Math.max(1, config.getInt("lives", lives));
@@ -177,110 +131,61 @@ public final class Fahare extends JavaPlugin implements Listener {
         return !isDead(player);
     }
 
-    private void deleteNextWorld(List<World> worlds, @Nullable Path backupDestination) {
-        // check if all worlds are deleted
+    @EventHandler
+    public void onServerTickEnd(ServerTickEndEvent event) {
+        if (!resetting)
+            return;
+
         if (worlds.isEmpty()) {
-            World overworld = fakeOverworld();
-            Location spawn = overworld.getSpawnLocation();
-            for (Player player : Bukkit.getOnlinePlayers()) {
-                player.setGameMode(GameMode.SURVIVAL);
-                player.teleport(spawn);
-            }
             resetting = false;
             return;
         }
 
-        // check if worlds are ticking
-        if (Bukkit.isTickingWorlds()) {
-            Bukkit.getScheduler().runTaskLater(this, () -> deleteNextWorld(worlds, backupDestination), 1);
-            return;
-        }
-
-        // get world data
         World world = worlds.remove(0);
         String worldName = world.getName();
-        Component worldKey = text(worldName);
-        WorldCreator creator = new WorldCreator(worldName, world.getKey());
+        WorldCreator creator = new WorldCreator(worldName);
         long seed = RANDOM.nextLong();
-        getComponentLogger().info(translatable("fhr.log.seed", worldKey, text(seed)));
         creator.copy(world).seed(seed);
 
-        // unload world
-        if (Bukkit.unloadWorld(world, backup)) {
+        if (Bukkit.unloadWorld(world, false)) {
             try {
-                Path worldFolder = worldContainer.resolve(worldName);
-                Component arg = text(worldFolder.toString());
-                if (backupDestination != null) {
-                    // Backup world
-                    getComponentLogger().info(translatable("fhr.log.info.backup", arg));
-                    Files.move(worldFolder, backupDestination.resolve(worldName));
-                } else {
-                    // Delete world
-                    getComponentLogger().info(translatable("fhr.log.info.delete", arg));
-                    IOUtils.deleteDirectory(worldFolder);
-                }
-
-                // create new world
+                IOUtils.deleteDirectory(worldContainer.resolve(worldName));
                 creator.createWorld();
-                Bukkit.getServer().sendMessage(translatable("fhr.chat.success", worldKey));
+                getLogger().info("New world");
             } catch (Exception e) {
-                Component error = translatable("fhr.chat.error", NamedTextColor.RED, worldKey);
-                Audience.audience(Bukkit.getOnlinePlayers()).sendMessage(error);
-                getComponentLogger().warn(error, e);
+                getLogger().info(e.toString());
             }
-        } else {
-            Bukkit.getServer().sendMessage(translatable("fhr.chat.error", NamedTextColor.RED, worldKey));
         }
-
-        Bukkit.getScheduler().runTaskLater(this, () -> deleteNextWorld(worlds, backupDestination), 1);
     }
 
     public synchronized void reset() {
         if (resetting)
             return;
-        if (limboWorld == null)
-            return;
-        deaths.clear();
-        // teleport all players to limbo
-        Location destination = new Location(limboWorld, 0, 100, 0);
+
+        Location destination = new Location(limboWorld, 0, 0, 0);
         for (Player player : Bukkit.getOnlinePlayers()) {
             player.setGameMode(GameMode.SPECTATOR);
             player.getInventory().clear();
             player.getEnderChest().clear();
             player.setLevel(0);
             player.setExp(0);
-            player.teleport(destination);
             player.setHealth(20);
+            player.teleport(destination);
             player.setFoodLevel(20);
             player.setSaturation(5);
         }
-        // check if worlds are ticking
-        if (Bukkit.isTickingWorlds()) {
-            Bukkit.getScheduler().runTaskLater(this, this::reset, 1);
-            return;
-        }
+
+        deaths.clear();
         resetting = true;
-        // calculate backup folder
-        Path backupDestination = null;
-        if (backup && backupContainer != null) {
-            String baseName = ISO_LOCAL_DATE.format(LocalDate.now());
-            int attempt = 1;
-            do {
-                String name = baseName + '-' + attempt++;
-                backupDestination = backupContainer.resolve(name);
-            } while (Files.exists(backupDestination));
-            try {
-                Files.createDirectory(backupDestination);
-            } catch (Exception e) {
-                getComponentLogger().error(translatable("fhr.log.error.backup-subfolder", text(backupDestination.toString())), e);
-                backupDestination = null;
-            }
+        worldIndex = worldIndex == 0 ? 1 : 0;
+        worlds = Bukkit.getWorlds().stream().filter(w -> !w.getName().equals("limbo") && 
+            !w.getName().equals("world") && !w.getName().equals(worldNames[worldIndex])).collect(Collectors.toList());
+
+        Location spawn = foverworld().getSpawnLocation();
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            player.setGameMode(GameMode.SURVIVAL);
+            player.teleport(spawn);
         }
-        // unload and delete worlds
-        List<World> worlds = Bukkit.getWorlds().stream()
-                .filter(w -> !w.getKey().equals(limboWorldKey) && !w.getKey().equals(REAL_OVERWORLD_KEY))
-                .collect(Collectors.toList());
-        deleteNextWorld(worlds, backupDestination);
     }
 
     public void resetCheck(boolean death) {
@@ -300,61 +205,37 @@ public final class Fahare extends JavaPlugin implements Listener {
         reset();
     }
 
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onPlayerPortal(PlayerPortalEvent event) {
+        var player = event.getPlayer();
+        var playerLoc = player.getLocation();
+        var cause = event.getCause();
+        var environment = player.getWorld().getEnvironment();
+
+        if (cause == PlayerTeleportEvent.TeleportCause.NETHER_PORTAL) {
+            var inNether = environment.equals(World.Environment.NETHER);
+            event.setTo(new Location(inNether ? foverworld() : Bukkit.getWorld("world_nether"), 
+                inNether ? playerLoc.getX() * 8.0f : playerLoc.getX() / 8.0f,
+                inNether ? playerLoc.getY() * 8.0f : playerLoc.getY() / 8.0f,
+                inNether ? playerLoc.getZ() * 8.0f : playerLoc.getZ() / 8.0f));
+        } else if (cause == PlayerTeleportEvent.TeleportCause.END_PORTAL) {
+            var inEnd = environment.equals(World.Environment.THE_END);
+            event.setTo(inEnd ? foverworld().getSpawnLocation() : 
+                new Location(Bukkit.getWorld("world_the_end"), 100, 49, 0));
+        }
+    }
+
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onDeath(PlayerDeathEvent event) {
         Player player = event.getEntity();
         addDeathTo(player.getUniqueId());
         if (isAlive(player.getUniqueId()))
             return;
+            
         Bukkit.getScheduler().runTaskLater(this, () -> {
             player.setGameMode(GameMode.SPECTATOR);
             player.spigot().respawn();
             resetCheck(true);
         }, 1);
-    }
-
-    @EventHandler(priority = EventPriority.LOWEST)
-    public void onEntityPortal(EntityPortalEvent event) {
-        Location to = event.getTo();
-        if (to == null) return;
-        World toWorld = to.getWorld();
-        if (toWorld == null) return;
-        if (!toWorld.getKey().equals(REAL_OVERWORLD_KEY)) return;
-
-        // check if player is coming from the end, and if so just send them to spawn
-        if (event.getPortalType() == PortalType.ENDER)
-            event.setTo(fakeOverworld().getSpawnLocation());
-            // else just update the world
-        else
-            to.setWorld(fakeOverworld());
-    }
-
-    @EventHandler(priority = EventPriority.LOWEST)
-    public void onPlayerPortal(PlayerPortalEvent event) {
-        Location to = event.getTo();
-        World toWorld = to.getWorld();
-        if (toWorld == null) return;
-        if (!toWorld.getKey().equals(REAL_OVERWORLD_KEY)) return;
-
-        // check if player is coming from the end, and if so just send them to spawn
-        if (event.getCause() == PlayerTeleportEvent.TeleportCause.END_PORTAL)
-            event.setTo(fakeOverworld().getSpawnLocation());
-            // else just update the world
-        else
-            to.setWorld(fakeOverworld());
-    }
-
-    @EventHandler(priority = EventPriority.LOWEST)
-    public void onPlayerJoin(PlayerJoinEvent event) {
-        Player player = event.getPlayer();
-        if (player.getWorld().getKey().equals(REAL_OVERWORLD_KEY))
-            player.teleport(fakeOverworld().getSpawnLocation());
-    }
-
-    @EventHandler(priority = EventPriority.LOWEST)
-    public void onPlayerRespawn(PlayerRespawnEvent event) {
-        Location destination = event.getRespawnLocation();
-        if (destination.getWorld().getKey().equals(REAL_OVERWORLD_KEY))
-            event.setRespawnLocation(fakeOverworld().getSpawnLocation());
     }
 }

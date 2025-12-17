@@ -6,7 +6,7 @@ plugins {
 
 group = 'dev.qixils'
 version = '1.2.2-SNAPSHOT'
-def mcVersion = '1.19.3'
+def mcVersion = '1.16.1'
 
 repositories {
     mavenCentral()
@@ -21,12 +21,12 @@ repositories {
 }
 
 dependencies {
-    compileOnly "io.papermc.paper:paper-api:$mcVersion-R0.1-SNAPSHOT"
+    compileOnly "com.destroystokyo.paper:paper-api:$mcVersion-R0.1-SNAPSHOT"
     implementation "cloud.commandframework:cloud-paper:1.8.4" // TODO: maybe move away from cloud to shed a megabyte of dependencies
     implementation "cloud.commandframework:cloud-minecraft-extras:1.8.4"
 }
 
-def targetJavaVersion = 17
+def targetJavaVersion = 14
 java {
     def javaVersion = JavaVersion.toVersion(targetJavaVersion)
     sourceCompatibility = javaVersion
@@ -68,3 +68,5 @@ shadowJar {
 tasks.build {
     dependsOn shadowJar
 }
+
+layout.buildDirectory.set(file("./build"))
