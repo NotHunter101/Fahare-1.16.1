@@ -23,6 +23,7 @@ import org.bukkit.event.player.PlayerPortalEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scoreboard.*;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -36,6 +37,8 @@ import static java.time.format.DateTimeFormatter.ISO_LOCAL_DATE;
 import static net.kyori.adventure.text.Component.text;
 
 public final class Fahare extends JavaPlugin implements Listener {
+    private String[] unicodeArrows = { "\u2193", "\u2190", "\u2191",  "\u2192" };
+    private double arrowWindow = Math.PI * 0.25;
     private String[] worldNames = { "fworld", "fworld2" };
     private int worldIndex = 0;
 
@@ -43,8 +46,8 @@ public final class Fahare extends JavaPlugin implements Listener {
     private final Map<UUID, Integer> deaths = new HashMap<>();
     private List<World> worlds;
     private Path worldContainer;
-    private World limboWorld;
     private boolean resetting = false;
+    private long worldStart;
     
     private boolean autoReset = true;
     private boolean anyDeath = false;
@@ -70,12 +73,8 @@ public final class Fahare extends JavaPlugin implements Listener {
     @Override
     public void onEnable() {
         loadConfig();
-
         worldContainer = Bukkit.getWorldContainer().toPath();
-        limboWorld = new WorldCreator("limbo")
-                .type(WorldType.FLAT)
-                .generatorSettings("{\"structures\":{\"structures\":{}},\"layers\":[{\"block\":\"air\",\"height\":1}],\"biome\":\"plains\"}")
-                .createWorld();
+        worldStart = System.currentTimeMillis();
 
         try {
             final PaperCommandManager<CommandSender> commandManager = PaperCommandManager.createNative(this, CommandExecutionCoordinator.simpleCoordinator());
@@ -105,12 +104,70 @@ public final class Fahare extends JavaPlugin implements Listener {
                 player.teleport(destination);
         }, 1, 1);
 
+        var manager = Bukkit.getScoreboardManager();
         Bukkit.getScheduler().runTaskTimer(this, () -> {
-            getLogger().info("hello");
+            long totalSeconds = (System.currentTimeMillis() - worldStart) / 1000;
+            long seconds = totalSeconds % 60;
+            long minutes = totalSeconds / 60;
 
-            
+            for (Player player : Bukkit.getOnlinePlayers()) {
+                var playerLoc = player.getLocation();
+                var playerDir = playerLoc.getDirection();
+                var playerWorld = player.getWorld();
+                var board = manager.getNewScoreboard();
+                var objective = board.registerNewObjective("timer", "timer");
 
-        }, 1, 20);
+                playerDir.setY(0);
+                playerDir.normalize();
+                objective.setDisplayName("Timer - " + minutes + ":" + (seconds < 10 ? "0" + seconds : seconds));
+                objective.setDisplaySlot(DisplaySlot.SIDEBAR);
+                var playerDirRight = playerDir.getCrossProduct(new org.bukkit.util.Vector(0, 1, 0));
+
+                addScoreboardWaypoint(
+                    objective, 
+                    player.getLocation(), 
+                    playerWorld.getSpawnLocation(), 
+                    "Spawn", playerDir, playerDirRight);
+
+                for (Player other : playerWorld.getPlayers())
+                    if (player != other)
+                        addScoreboardWaypoint(
+                            objective,
+                            player.getLocation(), 
+                            other.getLocation(), 
+                            other.getName(), playerDir, playerDirRight);
+                        
+                player.setScoreboard(board);
+            }
+        }, 1, 5);
+    }
+
+    private void addScoreboardWaypoint(
+        Objective objective, 
+        Location playerLoc, 
+        Location otherLoc, 
+        String name, 
+        org.bukkit.util.Vector playerDir, 
+        org.bukkit.util.Vector playerDirRight) 
+    {
+        var dir = new org.bukkit.util.Vector(
+            playerLoc.getX() - otherLoc.getX(), 0, 
+            playerLoc.getZ() - otherLoc.getZ());
+        dir.normalize();
+
+        var signAngle = playerDir.angle(dir);
+        var signAngleRight = playerDirRight.angle(dir);
+        var angleIndex = 0;
+
+        if (Math.PI - signAngle <= arrowWindow)
+            angleIndex = 2;
+        else if (signAngleRight <= arrowWindow)
+            angleIndex = 1;
+        else if (Math.PI - signAngleRight <= arrowWindow)
+            angleIndex = 3;
+
+        var dispName = ChatColor.RED + name + " " + unicodeArrows[angleIndex];
+        objective.getScore(dispName).setScore((int)otherLoc.distance(playerLoc));
     }
 
     private void loadConfig() {
@@ -169,46 +226,46 @@ public final class Fahare extends JavaPlugin implements Listener {
         if (resetting)
             return;
 
-        Location destination = new Location(limboWorld, 0, 0, 0);
+        getLogger().info("reset");
+
+        deaths.clear();
+        resetting = true;
+        worldIndex = worldIndex == 0 ? 1 : 0;
+        worldStart = System.currentTimeMillis();
+        worlds = Bukkit.getWorlds().stream().filter(w -> !w.getName()
+            .equals("world") && !w.getName().equals(worldNames[worldIndex])).collect(Collectors.toList());
+
+        Location spawn = foverworld().getSpawnLocation();
         for (Player player : Bukkit.getOnlinePlayers()) {
-            player.setGameMode(GameMode.SPECTATOR);
+            player.setGameMode(GameMode.SURVIVAL);
             player.getInventory().clear();
             player.getEnderChest().clear();
             player.setLevel(0);
             player.setExp(0);
             player.setHealth(20);
-            player.teleport(destination);
+            player.teleport(spawn);
             player.setFoodLevel(20);
             player.setSaturation(5);
-        }
-
-        deaths.clear();
-        resetting = true;
-        worldIndex = worldIndex == 0 ? 1 : 0;
-        worlds = Bukkit.getWorlds().stream().filter(w -> !w.getName().equals("limbo") && 
-            !w.getName().equals("world") && !w.getName().equals(worldNames[worldIndex])).collect(Collectors.toList());
-
-        Location spawn = foverworld().getSpawnLocation();
-        for (Player player : Bukkit.getOnlinePlayers()) {
-            player.setGameMode(GameMode.SURVIVAL);
-            player.teleport(spawn);
         }
     }
 
     public void resetCheck(boolean death) {
         if (!autoReset)
             return;
+            
         if (anyDeath && death) {
             reset();
             return;
         }
+
         Collection<? extends Player> players = Bukkit.getOnlinePlayers();
         if (players.isEmpty())
             return;
-        for (Player player : players) {
+
+        for (Player player : players)
             if (isAlive(player.getUniqueId()))
                 return;
-        }
+
         reset();
     }
 
@@ -236,6 +293,7 @@ public final class Fahare extends JavaPlugin implements Listener {
     public void onDeath(PlayerDeathEvent event) {
         Player player = event.getEntity();
         addDeathTo(player.getUniqueId());
+        
         if (isAlive(player.getUniqueId()))
             return;
             
